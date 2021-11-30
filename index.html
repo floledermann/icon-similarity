@@ -1,0 +1,633 @@
+<!doctype html>
+<html>
+<head>
+<title>Icon Similarity Measurement</title>
+<style>
+html, body {
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+#dropArea {
+  border: 4px dashed #ddd;
+  margin: 1em 0;
+  background-color: #eee;
+  color: #666;
+  border-radius: 20px;
+  font-weight: bold;
+  font-size: 2em;
+  text-align: center;
+  line-height: 4em;
+  vertical-align: 10px;
+}
+
+#output {
+  border: 1px solid #999;
+  height: 400px;
+  overflow-y: scroll;
+  font-family: monospace;
+  white-space: pre;
+}
+</style>
+</head>
+<body>
+
+Algorithm Scale: <input type="number" id="algorithmScaleInput" value="1.0" min="0.0" step="0.1"><br>
+Bitmap Threshold: <input type="number" id="bitmapThresholdInput" value="120" min="1" max="255" step="1">
+
+
+<div id="dropArea">
+Drop icon files here!
+</div>
+
+<div id="status"></div>
+
+<div id="output"></div>
+
+<script>
+
+// Observable API
+let DOM = {
+  context2d: function(width, height) {
+    let c = document.createElement("canvas");
+    c.width = width;
+    c.height = height;
+    return c.getContext("2d");
+  }
+}
+
+
+let dropZone = document.getElementById("dropArea");
+
+dropZone.addEventListener("drop", async event => {
+  console.log('File(s) dropped');
+
+  // Prevent default behavior (Prevent file from being opened)
+  event.preventDefault();
+
+  let items = await getAllFileEntries(event.dataTransfer.items);
+  
+  processFiles(items);
+});
+
+dropZone.addEventListener("dragover", event => event.preventDefault());
+
+// Drop handler function to get all files
+async function getAllFileEntries(dataTransferItemList) {
+  let fileEntries = [];
+  // Use BFS to traverse entire directory/file structure
+  let queue = [];
+  // Unfortunately dataTransferItemList is not iterable i.e. no forEach
+  for (let i = 0; i < dataTransferItemList.length; i++) {
+    queue.push(dataTransferItemList[i].webkitGetAsEntry());
+  }
+  while (queue.length > 0) {
+    let entry = queue.shift();
+    if (entry.isFile) {
+      fileEntries.push(entry);
+    } else if (entry.isDirectory) {
+      queue.push(...await readAllDirectoryEntries(entry.createReader()));
+    }
+  }
+  return fileEntries;
+}
+
+// Get all the entries (files or sub-directories) in a directory 
+// by calling readEntries until it returns empty array
+async function readAllDirectoryEntries(directoryReader) {
+  let entries = [];
+  let readEntries = await readEntriesPromise(directoryReader);
+  while (readEntries.length > 0) {
+    entries.push(...readEntries);
+    readEntries = await readEntriesPromise(directoryReader);
+  }
+  return entries;
+}
+
+// Wrap readEntries in a promise to make working with readEntries easier
+// readEntries will return only some of the entries in a directory
+// e.g. Chrome returns at most 100 entries at a time
+async function readEntriesPromise(directoryReader) {
+  try {
+    return await new Promise((resolve, reject) => {
+      directoryReader.readEntries(resolve, reject);
+    });
+  } catch (err) {
+    console.log(err);
+  }
+}
+
+function processFiles(fileEntries) {
+
+  fileEntries = fileEntries.filter(e => e.name.toLowerCase().endsWith(".svg"));
+  
+  //console.log(fileEntries);
+  
+  Promise.all(fileEntries.map(entry => new Promise((resolve, reject) => {
+    entry.file(f => {
+      let reader = new FileReader();
+      reader.addEventListener('loadend', () => {
+        const img = new Image();
+        img.src = reader.result;
+        img.filename = entry.name;
+        resolve(img);
+      });
+      reader.readAsDataURL(f);
+    });
+  }))).then(results => processImages(results));
+}
+
+function processImages(images) {
+
+  //let canvas = new Image(200, 200);
+  let maxWidth = images.reduce((acc, img) => Math.max(acc, img.width), 0);
+  console.log("Max width: " + maxWidth);
+  
+  let algoScale = 16/maxWidth;
+  //algoScale = +document.getElementById("algorithmScaleInput").value;
+  let bitmapThreshold = +document.getElementById("bitmapThresholdInput").value;
+  
+  let entries = images.map((i, idx) => {
+    let sampled = sampleSVG(i, algoScale);
+    let bitmap = thresh(sampled, bitmapThreshold);
+    let bounds = getOpaqueImageBounds(i);
+    let pixelCount = countPixels(bitmap);
+    return {
+      image: i,
+      index: idx,
+      sampled: sampled,
+      bitmap: bitmap,
+      bounds: bounds,
+      pixelCount: pixelCount,
+      name: i.filename.split(".")[0]
+    }
+  });
+  
+  computeDifference(entries, {
+    scale: algoScale,
+    binary: true,
+    binaryThreshold: bitmapThreshold
+  });
+
+}
+
+let startTime = 0;
+let diffs = [];
+
+function computeDifference(entries, options, index1=0, index2=0) {
+  
+  if (index1 == 0 && index2 == 0) {
+    startTime = Date.now();
+  }
+  
+  if (index2 == 0) {
+    diffs = [];
+    entries[index1].diffs = diffs;
+  }
+  if (index2 < index1) {
+    // for symmetrical diff metric, copy and swap existing value
+    let entry = entries[index2].diffs[index1];
+    diffs[index2] = {
+      img1: entry.img2,
+      img2: entry.img1,
+      raster1: entry.img2Raster,
+      raster2: entry.img1Raster,
+      align: entry.align,
+      andImg: entry.andImg,
+      xorImg: entry.xorImg,
+      diffImg: entry.diffImg,
+      commonPixelCount: entry.commonPixelCount,
+      exclusivePixelCount: entry.exclusivePixelCount,
+      ratio: entry.ratio,
+      pixelRatio: entry.pixelRatio
+    }
+  }
+  else if (index2 == index1) {
+    // dummy entry for same image
+    diffs[index2] = {ratio: 0};
+  }
+  else {
+    /*
+    entries[index1].diffs[index2] = maxOverlap(entries[index1], entries[index2], index1, index2, {
+      //scale: algoScale,
+      binary: true,
+      //binaryThreshold: bitmapThreshold
+    });
+    */
+    diffs[index2] = maxOverlap(entries[index1], entries[index2], index1, index2, options);
+  }
+  index2++;
+  if (index2 > entries.length-1) {
+    // sort by ratio and remove dummy entries again
+    let sorted = diffs.filter(d => d.ratio < 1.2).sort((a,b) => a.ratio-b.ratio).filter(d => d.img1);
+    let str = entries[index1].name + "," + sorted.map(e => e.img2.name + "," + (e.exclusivePixelCount / e.xorImg.width / e.xorImg.height).toFixed(2) + "," + e.ratio.toFixed(2) + "," + e.pixelRatio.toFixed(2)).join(",");
+    
+    document.getElementById("output").innerHTML += str + "\n";
+    
+    index1++;
+    index2 = 0;
+    diffs = [];
+  }
+  
+  maxIndex = entries.length;
+  //maxIndex = 4;
+  if (index1 < maxIndex) {
+    let count = index1 * entries.length + index2;
+    let elapsed = (Date.now() - startTime) / 1000;
+    let secondsRem = Math.round(elapsed / count * (entries.length ** 2 - count)) % 60;
+    let minutesRem = Math.floor(elapsed / count * (entries.length ** 2 - count) / 60) % 60;
+    let hoursRem = Math.floor(elapsed / count * (entries.length ** 2 - count) / 3600)
+    document.getElementById("status").innerHTML = "Processing image " + (index1+1) + " of " + entries.length + " - computing difference " + (index2+1) + "... " + (count / (entries.length ** 2) * 100).toFixed(1) + "%, " + hoursRem + ":" + minutesRem + ":" + secondsRem + " remaining.";
+    setTimeout(() => computeDifference(entries, options, index1, index2), 0);
+  }
+  else {
+    document.getElementById("status").innerHTML = "Finished.";
+    //reportResults(entries);
+  }
+}
+
+function reportResults(entries) {
+  for (let entry of entries) {
+    if (entry.diffs) {
+      let sorted = entry.diffs.sort((a,b) => a.ratio-b.ratio);
+      sorted = sorted.slice(1);
+      /*
+      console.log(entry.name);
+      for (let diff of sorted.slice(0,3)) {
+        console.log("  " + (diff.exclusivePixelCount / diff.xorImg.width / diff.xorImg.height).toFixed(2) + " / "+ diff.ratio.toFixed(2) + " " + diff.img2.name);
+        console.log(diff);
+      }
+      */
+      console.log(entry.name + "," + sorted.map(e => e.img2.name + "," + (e.exclusivePixelCount / e.xorImg.width / e.xorImg.height).toFixed(2) + "," + e.ratio.toFixed(2)).join(","));
+    }
+  }
+}
+
+function sampleSVG(image, scale=1) {
+  let width = Math.ceil(image.width * scale);
+  let height = Math.ceil(image.height * scale);
+  const ctx = DOM.context2d(width, height);
+  ctx.drawImage(image, 0, 0, image.width * scale, image.height * scale);
+  //return ctx.getImageData(0,0,width,height);
+  return ctx.canvas;
+}
+
+function thresh(img, threshold=120) {
+  let ctx = img.getContext("2d");
+  let pixels = ctx.getImageData(0, 0, img.width, img.height); 
+
+  let thresholdRGB = threshold * 3;
+
+  let d = pixels.data;
+  let i = 0;
+  
+  while (i < d.length) {
+    const v = d[i] + d[i+1] + d[i+2];
+    [d[i], d[i+1], d[i+2]] = (v >= threshold ? [255,255,255] : [0,0,0]);
+    // alpha
+    d[i+3] = d[i+3] > threshold ? 255 : 0;
+    i += 4;
+  }
+
+  const ctx2 = DOM.context2d(img.width, img.height);
+  ctx2.putImageData(pixels, 0, 0);
+
+  return ctx2.canvas;
+}
+
+function diffBitmap(image1, image2, options) {
+  options = Object.assign({}, options, {op:"destination-out"});
+  return combine(image1, image2, options);
+}
+
+function andBitmap(image1, image2, options) {
+  options = Object.assign({}, options, {op:"destination-in"});
+  return combine(image1, image2, options);
+}
+
+function xorBitmap(image1, image2, options) {
+  options = Object.assign({}, options, {op:"xor"});
+  return combine(image1, image2, options);
+}
+
+function compare(img1, img2) {
+  let hAligns = (img1.width == img2.width) ? ["left"] : ["left","middle","right"];
+  let vAligns = (img1.height == img2.height) ? ["top"] : ["top","middle","bottom"];
+}
+
+function countPixels(img) {
+  
+  let ctx = img.getContext("2d");
+  let pixels = ctx.getImageData(0, 0, img.width, img.height); 
+
+  let d = pixels.data;
+  let i = 0;
+  let count = 0;
+  
+  while (i < d.length) {
+    count += d[i+3] / 255;
+    i += 4;
+  }
+
+  return count;
+}
+
+function getOpaqueImageBounds(image, scale = 16, thresh = 10) {
+
+  let w = image.width * scale, h = image.height * scale;
+  let top=0, right=w-1, bottom=h-1, left=0;
+  
+  let ctx = DOM.context2d(w, h);
+  ctx.drawImage(image, 0, 0, w, h);
+  let data = ctx.getImageData(0, 0, w, h).data; 
+
+  loop: 
+  for (; top<h; top++) {
+    let x=0;
+    for (; x<w; x++) {
+      if (data[top*w*4+x*4+3] > thresh) break loop;
+    }
+  }
+
+  loop: 
+  for (; bottom>0; bottom--) {
+    let x=0;
+    for (; x<w; x++) {
+      if (data[bottom*w*4+x*4+3] > thresh) break loop;
+    }
+  }
+
+  loop: 
+  for (; left<w; left++) {
+    let y=0;
+    for (; y<h; y++) {
+      //       row     col       alpha
+      if (data[y*w*4 + left*4 + 3] > thresh) break loop;
+    }
+  }
+
+  loop: 
+  for (; right>0; right--) {
+    let y=0;
+    for (; y<h; y++) {
+      //       row     col      alpha
+      if (data[y*w*4 + right*4 + 3] > thresh) break loop;
+    }
+  }
+
+  return [left/scale, top/scale, (right+1-left)/scale, (bottom+1-top)/scale];
+}
+
+function rasterize(img, options = {}) {
+
+  options = Object.assign({
+    op:"source-over",
+    align: "top-left",
+    bounds: null,
+    scale: 1
+  }, options);
+
+  let bounds = options.bounds || img.bounds;
+
+  let width = img.width * options.scale,
+      height = img.height * options.scale;
+
+  if (bounds) {
+    width = bounds[2]*options.scale;
+    height = bounds[3]*options.scale;
+  }
+
+  // round up for full pixels
+  let pxwidth = Math.ceil(width),
+      pxheight = Math.ceil(height);
+  
+  let ctx = DOM.context2d(pxwidth, pxheight);
+
+  let x=0,y=0;
+
+  let [vAlign, hAlign] = options.align.split("-");
+
+  switch (vAlign) {
+    case "bottom":  y=pxheight-height;
+                    break;
+    case "center":  y=(pxheight-height)/2;
+                    break;
+    case "top":    // default y=0;
+  }
+
+  switch (hAlign) {
+    case "right":   x=pxwidth-width;
+                    break;
+    case "center":  x=(pxwidth-width)/2;
+                    break;
+    case "left":    // default x=0;
+  }
+
+  ctx.drawImage(img, (x-bounds[0])* options.scale, (y-bounds[1])* options.scale, img.width * options.scale, img.height * options.scale);
+  //ctx.drawImage(img, bounds[0], bounds[1], bounds[2], bounds[3], 0, 0, pxwidth, pxheight);
+
+  return ctx.canvas;
+}
+
+function maxOverlap(img1, img2, options={}) {
+
+  options = {
+    scale: 1,
+    binary: true,
+    binaryThreshold: 120,
+    ...options
+  };
+  
+  let bounds1 = img1.bounds; // || getOpaqueImageBounds(img1);
+  let bounds2 = img2.bounds; // || getOpaqueImageBounds(img2);
+
+  // even if width/height of the 2 images are equal, try the different subpixel alignments
+  let hAlignCandidates = ["left","center","right"];
+                                                                  
+  // equal height -> no need to vary vertical alignment
+  let vAlignCandidates = ["top","center","bottom"];
+
+  let result = null;
+  let minRatio = Infinity;
+
+  for (let hAlign of hAlignCandidates) {
+    for (let vAlign of vAlignCandidates) {
+      let align = vAlign + "-" + hAlign;
+      if (!img1.alignedRaster?.[align]) {
+        if (!img1.alignedRaster) img1.alignedRaster = {};
+        img1.alignedRaster[align] = rasterize(img1.image, {align:align, bounds: bounds1, scale: options.scale});
+        if (options.binary) {
+          img1.alignedRaster[align] = thresh(img1.alignedRaster[align], options.binaryThreshold);
+        }
+      }
+      if (!img2.alignedRaster?.[align]) {
+        if (!img2.alignedRaster) img2.alignedRaster = {};
+        img2.alignedRaster[align] = rasterize(img2.image, {align:align, bounds: bounds2, scale: options.scale});
+        if (options.binary) {
+          img2.alignedRaster[align] = thresh(img2.alignedRaster[align], options.binaryThreshold);
+        }
+      }
+      let img1Raster = img1.alignedRaster[align];
+      let img2Raster = img2.alignedRaster[align];
+      let andImg = andBitmap(img1Raster, img2Raster, {align: align});
+      let xorImg = xorBitmap(img1Raster, img2Raster, {align: align});
+      let common = countPixels(andImg);
+      let exclusive = countPixels(xorImg);
+      let ratio = Infinity;
+      if (common > 0) {
+        ratio = exclusive / common;
+      }
+      if (ratio < minRatio || (ratio === Infinity && minRatio === Infinity)) {
+        result = {
+          img1: img1,
+          img2: img2,
+          align: align,
+          raster1: img1Raster,
+          raster2: img2Raster,
+          andImg: andImg,
+          xorImg: xorImg,
+          diffImg: diffBitmap(img1Raster, img2Raster, {align: align}),
+          commonPixelCount: common,
+          exclusivePixelCount: exclusive,
+          ratio: ratio,
+          pixelRatio: Math.min(img1.pixelCount, img2.pixelCount) / Math.max(img1.pixelCount, img2.pixelCount)
+        };
+        minRatio = ratio;
+      }
+    }
+  }
+
+  return result;
+}
+
+function combine(img1, img2, options = {}) {
+
+  if (typeof options == "string") options = {op: options};
+
+  options = Object.assign({
+    op:"source-over",
+    align: "top-left"
+  }, options);
+  
+  let ctx = DOM.context2d(Math.max(img1.width, img2.width), Math.max(img1.height, img2.height));
+
+  let x1=0, y1=0, x2=0, y2=0;
+
+  let [vAlign, hAlign] = options.align.split("-");
+
+  switch (hAlign) {
+    case "right":   x1=Math.max(img2.width-img1.width, 0);
+                    x2=Math.max(img1.width-img2.width, 0);
+                    break;
+    case "middle":  x1=Math.max(Math.trunc((img2.width-img1.width)/2), 0);
+                    x2=Math.max(Math.trunc((img1.width-img2.width)/2), 0);
+                    break;
+    case "left":    // default;
+  }
+
+  switch (vAlign) {
+    case "bottom":  y1=Math.max(img2.height-img1.height, 0);
+                    y2=Math.max(img1.height-img2.height, 0);
+                    break;
+    case "middle":  y1=Math.max(Math.trunc((img2.height-img1.height)/2), 0);
+                    y2=Math.max(Math.trunc((img1.height-img2.height)/2), 0);
+                    break;
+    case "top":    // default;
+  }
+
+  if (options.filter) ctx.filter = options.filter;
+  
+  ctx.drawImage(img1, x1, y1);
+
+  if (img2) {
+    ctx.globalCompositeOperation = options.op;
+    
+    ctx.drawImage(img2, x2, y2);
+  }
+  
+  return ctx.canvas;
+}
+
+function growWithCircle(img, options={}) {
+
+  options = {
+    radius: 1,
+    opacity: 255,
+    opacityThreshold: 120,
+    ...options
+  };
+  
+  let ctx = img.getContext("2d");
+
+  let ctx2 = DOM.context2d(img.width, img.height);
+  //ctx2.drawImage(img, 0, 0);
+
+  ctx2.fillStyle = "rgba(0,0,0," + options.opacity/255 + ")";
+  ctx2.globalCompositeOperation = "multiply";
+  
+  let pixels1 = ctx.getImageData(0, 0, img.width, img.height); 
+  let d1 = pixels1.data;
+
+  let idx = (row, col) => ( row * img.width + col ) * 4;
+
+  for (let row = 0; row < img.height; row++) {
+    for (let col = 0; col < img.width; col++) {
+      let i = idx(row, col);
+      let [r,g,b,a] = [d1[i], d1[i+1], d1[i+2], d1[i+3]];
+      if (a > options.opacityThreshold) {
+        ctx2.beginPath();
+        ctx2.arc(col+0.5, row+0.5, options.radius, 0, Math.PI * 2);
+        ctx2.fill();
+      }
+    }
+  }
+
+  return ctx2.canvas;
+}
+
+
+function grow(img, options) {
+
+  options = Object.assign({
+    opacity: 96
+  }, options);
+  
+  let ctx = img.getContext("2d");
+
+  let ctx2 = DOM.context2d(img.width, img.height);
+  ctx2.drawImage(img, 0, 0);
+  
+  let pixels1 = ctx.getImageData(0, 0, img.width, img.height); 
+  let pixels2 = ctx2.getImageData(0, 0, img.width, img.height); 
+
+  let d1 = pixels1.data;
+  let d2 = pixels2.data;
+  let i = 0;
+
+  let idx = (row, col) => ( row * img.width + col ) * 4;
+
+  for (let row = 0; row < img.height; row++) {
+    for (let col = 0; col < img.width; col++) {
+      let i = idx(row, col);
+      let [r,g,b,a] = [d1[i], d1[i+1], d1[i+2], d1[i+3]];
+      if (a > 127) {
+        for (let [x,y] of [[0,1],[0,-1],[1,0],[-1,0]]) {
+          let idx2 = idx(row+y,col+x);
+          if (d1[idx2+3] < 255) {
+            d2[idx2] = 0;
+            d2[idx2+1] = 0;
+            d2[idx2+2] = 0;
+            d2[idx2+3] = Math.min(255, d2[idx2+3] + options.opacity);
+          }
+        }
+      }
+    }
+  }
+
+  //const ctx2 = DOM.context2d(img.width, img.height);
+  ctx2.putImageData(pixels2, 0, 0);
+
+  return ctx2.canvas;
+}
+</script>
+</body>
+</html>
