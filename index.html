@@ -31,7 +31,7 @@ html, body {
 </head>
 <body>
 
-Algorithm Scale: <input type="number" id="algorithmScaleInput" value="1.0" min="0.0" step="0.1"><br>
+Algorithm Resolution: <input type="number" id="algorithmResolution" value="20" min="8" max="64" step="1"><br>
 Bitmap Threshold: <input type="number" id="bitmapThresholdInput" value="120" min="1" max="255" step="1">
 
 
@@ -139,11 +139,17 @@ function processFiles(fileEntries) {
 function processImages(images) {
 
   //let canvas = new Image(200, 200);
-  let maxWidth = images.reduce((acc, img) => Math.max(acc, img.width), 0);
-  console.log("Max width: " + maxWidth);
+  let maxDim = images.reduce((acc, img) => (console.log(img.filename + " " + img.height),{w: Math.max(acc.w||0, img.width), h: Math.max(acc.h||0, img.height)}), {});
+  console.log("Max width: " + maxDim.w);
+  console.log("Max height: " + maxDim.h);
   
-  let algoScale = 16/maxWidth;
-  //algoScale = +document.getElementById("algorithmScaleInput").value;
+  let algoResolution = +document.getElementById("algorithmResolution").value;
+  let algoScale = algoResolution/Math.max(maxDim.w, maxDim.h);
+  
+  console.log("Algorithm working at scale: " + algoScale);
+
+  document.getElementById("output").innerHTML = algoResolution + "\n";
+  
   let bitmapThreshold = +document.getElementById("bitmapThresholdInput").value;
   
   let entries = images.map((i, idx) => {
@@ -158,12 +164,13 @@ function processImages(images) {
       bitmap: bitmap,
       bounds: bounds,
       pixelCount: pixelCount,
-      name: i.filename.split(".")[0]
+      name: i.filename.substring(0,i.filename.lastIndexOf("."))
     }
   });
   
   computeDifference(entries, {
     scale: algoScale,
+    resolution: algoResolution,
     binary: true,
     binaryThreshold: bitmapThreshold
   });
@@ -185,21 +192,16 @@ function computeDifference(entries, options, index1=0, index2=0) {
   }
   if (index2 < index1) {
     // for symmetrical diff metric, copy and swap existing value
+    /*
     let entry = entries[index2].diffs[index1];
-    diffs[index2] = {
-      img1: entry.img2,
-      img2: entry.img1,
-      raster1: entry.img2Raster,
-      raster2: entry.img1Raster,
-      align: entry.align,
-      andImg: entry.andImg,
-      xorImg: entry.xorImg,
-      diffImg: entry.diffImg,
-      commonPixelCount: entry.commonPixelCount,
-      exclusivePixelCount: entry.exclusivePixelCount,
-      ratio: entry.ratio,
-      pixelRatio: entry.pixelRatio
-    }
+    let newEntry = Object.assign({}, entry);
+    newEntry.img1 = entry.img2;
+    newEntry.img2 = entry.img1;
+    newEntry.raster1 = entry.img2Raster;
+    newEntry.raster2 = entry.img1Raster;
+    diffs[index2] = newEntry;
+    */
+    diffs[index2] = {};
   }
   else if (index2 == index1) {
     // dummy entry for same image
@@ -213,16 +215,21 @@ function computeDifference(entries, options, index1=0, index2=0) {
       //binaryThreshold: bitmapThreshold
     });
     */
-    diffs[index2] = maxOverlap(entries[index1], entries[index2], index1, index2, options);
+    diffs[index2] = maxOverlap(entries[index1], entries[index2], options);
   }
   index2++;
   if (index2 > entries.length-1) {
-    // sort by ratio and remove dummy entries again
-    let sorted = diffs.filter(d => d.ratio < 1.2).sort((a,b) => a.ratio-b.ratio).filter(d => d.img1);
-    let str = entries[index1].name + "," + sorted.map(e => e.img2.name + "," + (e.exclusivePixelCount / e.xorImg.width / e.xorImg.height).toFixed(2) + "," + e.ratio.toFixed(2) + "," + e.pixelRatio.toFixed(2)).join(",");
+    // sort by ratio and remove dummy entries
+    let sorted = diffs.filter(d => d.img1).sort((a,b) => a.ratio-b.ratio);
+    let str = entries[index1].name + "," + 
+              sorted.map(e => 
+                e.img2.name + "," + 
+                e.exclusivePixelCount + "," + 
+                e.commonPixelCount + "," + 
+                e.pixelRatio.toFixed(2)
+              ).join(",");
     
     document.getElementById("output").innerHTML += str + "\n";
-    
     index1++;
     index2 = 0;
     diffs = [];
@@ -230,13 +237,15 @@ function computeDifference(entries, options, index1=0, index2=0) {
   
   maxIndex = entries.length;
   //maxIndex = 4;
-  if (index1 < maxIndex) {
-    let count = index1 * entries.length + index2;
+  let countCurrent = index2-index1;
+  let total = entries.length * (entries.length + 1) / 2;
+  if (index1 < maxIndex && index2 > index1) {
+    let done = index1 * entries.length - (index1 * (index1 + 1) / 2) + countCurrent;  
     let elapsed = (Date.now() - startTime) / 1000;
-    let secondsRem = Math.round(elapsed / count * (entries.length ** 2 - count)) % 60;
-    let minutesRem = Math.floor(elapsed / count * (entries.length ** 2 - count) / 60) % 60;
-    let hoursRem = Math.floor(elapsed / count * (entries.length ** 2 - count) / 3600)
-    document.getElementById("status").innerHTML = "Processing image " + (index1+1) + " of " + entries.length + " - computing difference " + (index2+1) + "... " + (count / (entries.length ** 2) * 100).toFixed(1) + "%, " + hoursRem + ":" + minutesRem + ":" + secondsRem + " remaining.";
+    let secondsRem = Math.floor(elapsed / done * (total-done)) % 60;
+    let minutesRem = Math.floor(elapsed / done * (total-done) / 60) % 60;
+    let hoursRem = Math.floor(elapsed / done * (total-done) / 3600)
+    document.getElementById("status").innerHTML = "Processing image " + (index1+1) + " of " + entries.length + " - computing difference " + ("00"+countCurrent).slice(-3) + "... " + (done / total * 100).toFixed(1) + "%, " + hoursRem + ":" + ("0" + minutesRem).slice(-2) + ":" + ("0" + secondsRem).slice(-2) + " remaining.";
     setTimeout(() => computeDifference(entries, options, index1, index2), 0);
   }
   else {
@@ -485,16 +494,18 @@ function maxOverlap(img1, img2, options={}) {
           raster2: img2Raster,
           andImg: andImg,
           xorImg: xorImg,
-          diffImg: diffBitmap(img1Raster, img2Raster, {align: align}),
           commonPixelCount: common,
           exclusivePixelCount: exclusive,
           ratio: ratio,
-          pixelRatio: Math.min(img1.pixelCount, img2.pixelCount) / Math.max(img1.pixelCount, img2.pixelCount)
         };
         minRatio = ratio;
       }
     }
   }
+  
+  result.diffImg = diffBitmap(result.raster1, result.raster2, {align: result.align}),
+  result.pixelRatio = Math.min(result.img1.pixelCount, result.img2.pixelCount) / 
+                      Math.max(result.img1.pixelCount, result.img2.pixelCount);
 
   return result;
 }
