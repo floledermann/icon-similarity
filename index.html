@@ -226,7 +226,8 @@ function computeDifference(entries, options, index1=0, index2=0) {
                 e.img2.name + "," + 
                 e.exclusivePixelCount + "," + 
                 e.commonPixelCount + "," + 
-                e.pixelRatio.toFixed(2)
+                e.pixelRatio.toFixed(2) + "," +
+                e.maxDiffPixelCount
               ).join(",");
     
     document.getElementById("output").innerHTML += str + "\n";
@@ -239,13 +240,15 @@ function computeDifference(entries, options, index1=0, index2=0) {
   //maxIndex = 4;
   let countCurrent = index2-index1;
   let total = entries.length * (entries.length + 1) / 2;
-  if (index1 < maxIndex && index2 > index1) {
-    let done = index1 * entries.length - (index1 * (index1 + 1) / 2) + countCurrent;  
-    let elapsed = (Date.now() - startTime) / 1000;
-    let secondsRem = Math.floor(elapsed / done * (total-done)) % 60;
-    let minutesRem = Math.floor(elapsed / done * (total-done) / 60) % 60;
-    let hoursRem = Math.floor(elapsed / done * (total-done) / 3600)
-    document.getElementById("status").innerHTML = "Processing image " + (index1+1) + " of " + entries.length + " - computing difference " + ("00"+countCurrent).slice(-3) + "... " + (done / total * 100).toFixed(1) + "%, " + hoursRem + ":" + ("0" + minutesRem).slice(-2) + ":" + ("0" + secondsRem).slice(-2) + " remaining.";
+  if (index1 < maxIndex) {
+    if (index2 > index1) {
+      let done = index1 * entries.length - (index1 * (index1 + 1) / 2) + countCurrent;  
+      let elapsed = (Date.now() - startTime) / 1000;
+      let secondsRem = Math.floor(elapsed / done * (total-done)) % 60;
+      let minutesRem = Math.floor(elapsed / done * (total-done) / 60) % 60;
+      let hoursRem = Math.floor(elapsed / done * (total-done) / 3600)
+      document.getElementById("status").innerHTML = "Processing image " + (index1+1) + " of " + entries.length + " - computing difference " + ("00"+countCurrent).slice(-3) + "... " + (done / total * 100).toFixed(1) + "%, " + hoursRem + ":" + ("0" + minutesRem).slice(-2) + ":" + ("0" + secondsRem).slice(-2) + " remaining.";
+    }
     setTimeout(() => computeDifference(entries, options, index1, index2), 0);
   }
   else {
@@ -506,7 +509,10 @@ function maxOverlap(img1, img2, options={}) {
   result.diffImg = diffBitmap(result.raster1, result.raster2, {align: result.align}),
   result.pixelRatio = Math.min(result.img1.pixelCount, result.img2.pixelCount) / 
                       Math.max(result.img1.pixelCount, result.img2.pixelCount);
-
+  result.maxDiffPixelCount = Math.max(
+    countPixels(diffBitmap(result.raster1, result.raster2, {align: result.align})),
+    countPixels(diffBitmap(result.raster2, result.raster1, {align: result.align}))
+  );
   return result;
 }
 
