@@ -222,12 +222,14 @@ function computeDifference(entries, options, index1=0, index2=0) {
     // sort by ratio and remove dummy entries
     let sorted = diffs.filter(d => d.img1).sort((a,b) => a.ratio-b.ratio);
     let str = entries[index1].name + "," + 
+              // ====================================== OUTPUT FIELDS:
               sorted.map(e => 
-                e.img2.name + "," + 
-                e.exclusivePixelCount + "," + 
-                e.commonPixelCount + "," + 
-                e.pixelRatio.toFixed(2) + "," +
-                e.maxDiffPixelCount
+                e.img2.name + "," +                     // name
+                e.exclusivePixelCount + "," +           // exclusivePixelCount
+                e.commonPixelCount + "," +              // commonPixelCount
+                e.pixelRatio.toFixed(2) + "," +         // ink ratio 
+                e.maxDiffPixelCount + "," +             // maximum difference pixel count
+                e.maxErodedDiffPixelCount               // maximum eroded difference pixel count
               ).join(",");
     
     document.getElementById("output").innerHTML += str + "\n";
@@ -509,10 +511,19 @@ function maxOverlap(img1, img2, options={}) {
   result.diffImg = diffBitmap(result.raster1, result.raster2, {align: result.align}),
   result.pixelRatio = Math.min(result.img1.pixelCount, result.img2.pixelCount) / 
                       Math.max(result.img1.pixelCount, result.img2.pixelCount);
-  result.maxDiffPixelCount = Math.max(
-    countPixels(diffBitmap(result.raster1, result.raster2, {align: result.align})),
-    countPixels(diffBitmap(result.raster2, result.raster1, {align: result.align}))
-  );
+                      
+  let diff1 = diffBitmap(result.raster1, result.raster2, {align: result.align});
+  let diff2 = diffBitmap(result.raster2, result.raster1, {align: result.align});
+  let erode1 = erode(diff1, {diagonalNeighbors: true, neighborThreshold: 3});
+  let erode2 = erode(diff2, {diagonalNeighbors: true, neighborThreshold: 3});
+  let c1 = countPixels(diff1);
+  let c2 = countPixels(diff2);
+  let ce1 = countPixels(erode1);
+  let ce2 = countPixels(erode2);
+  
+  result.maxDiffPixelCount = Math.max(c1,c2);
+  result.maxErodedDiffPixelCount = Math.max(ce1,ce2);
+  
   return result;
 }
 
@@ -644,6 +655,122 @@ function grow(img, options) {
   ctx2.putImageData(pixels2, 0, 0);
 
   return ctx2.canvas;
+}
+
+function erode(img, options={}) { 
+
+  options = Object.assign({
+    diagonalNeighbors: false,
+    fillThreshold: 127,
+    neighborThreshold: options.diagonalNeighbors ? 6 : 4,
+    iterations: 1
+  }, options);
+  
+  let ctx = img.getContext("2d");
+
+  let ctx2 = DOM.context2d(img.width, img.height);
+  
+  let pixels1 = ctx.getImageData(0, 0, img.width, img.height); 
+  let pixels2 = ctx2.getImageData(0, 0, img.width, img.height); 
+
+  let d1 = pixels1.data;
+  let d2 = pixels2.data;
+
+  let kernel = [[0,1],[0,-1],[1,0],[-1,0]];
+  if (options.diagonalNeighbors) {
+    // add diagonals to kernel
+    kernel.splice(4, 0, [-1,-1],[-1,1],[1,-1],[1,1]);
+  }
+  
+  let idx = (row, col) => ( row * img.width + col ) * 4;
+
+  for (let row = 0; row < img.height; row++) {
+    for (let col = 0; col < img.width; col++) {
+      let i = idx(row, col);
+      let [r,g,b,a] = [d1[i], d1[i+1], d1[i+2], d1[i+3]];
+      if (a < options.fillThreshold) {
+        d2[i+3] = 0;
+      }
+      else {
+        let count = 0;
+        for (let [x,y] of kernel) {
+          if (col+x < 0 || col+x >= img.width || row+y < 0 || row+y >= img.height) continue;
+          let idx2 = idx(row+y,col+x);
+          if (d1[idx2+3] >= options.fillThreshold) {
+            count++;
+          }
+        }
+        if (count < options.neighborThreshold) {
+          d2[i+3] = 0;
+        }
+        else {
+          d2[i] = 0;
+          d2[i+1] = 0;
+          d2[i+2] = 0;
+          d2[i+3] = 255;
+        }
+      }
+    }
+  }
+
+  //const ctx2 = DOM.context2d(img.width, img.height);
+  ctx2.putImageData(pixels2, 0, 0);
+
+  if (options.iterations > 1) {
+    return erode(ctx2.canvas, Object.assign({}, options, {iterations: options.iterations-1}));
+  }
+
+  return ctx2.canvas;
+}
+
+function centerOfMass(img, options={}) {
+  options = Object.assign({
+    fillThreshold: 127
+  }, options);
+
+  let ctx = img.getContext("2d");
+
+  let pixels = ctx.getImageData(0, 0, img.width, img.height); 
+
+  let d = pixels.data;  
+
+  let getIndex = (row, col) => ( row * img.width + col ) * 4;
+
+  let sumX = 0, sumY = 0, count = 0;
+
+  for (let row = 0; row < img.height; row++) {
+    for (let col = 0; col < img.width; col++) {
+      let i = getIndex(row, col);
+      let [r,g,b,a] = [d[i], d[i+1], d[i+2], d[i+3]];
+      if (a >= options.fillThreshold) {
+        sumX += col;
+        sumY += row;
+        count++;
+      }
+    }
+  }
+
+  if (count > 0) {
+    return [sumX / count + 0.5, sumY / count + 0.5];
+  }
+
+  return [img.width / 2, img.height / 2];
+
+}
+
+function erodedCenterOfMass(img, options) {
+
+  let count = countPixels(img);
+  let lastImg, lastCount;
+
+  do {
+    lastImg = img;
+    lastCount = count;
+    img = erode(img, options);
+    count = countPixels(img);
+  } while (count > 0 && count < lastCount);
+
+  return centerOfMass(lastImg);
 }
 </script>
 </body>
