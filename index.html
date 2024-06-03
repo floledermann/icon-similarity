@@ -20,7 +20,7 @@ html, body {
   vertical-align: 10px;
 }
 
-#output {
+#output, #status {
   border: 1px solid #999;
   height: 400px;
   overflow-y: scroll;
@@ -34,24 +34,45 @@ html, body {
 Algorithm Resolution: <input type="number" id="algorithmResolution" value="20" min="8" max="64" step="1"><br>
 Bitmap Threshold: <input type="number" id="bitmapThresholdInput" value="120" min="1" max="255" step="1">
 
-
 <div id="dropArea">
 Drop icon files here!
 </div>
 
-<div id="status"></div>
-
+<p>Results:</p>
 <div id="output"></div>
 
-<script>
+<p>Status / Log:</p>
+<div id="status"></div>
 
-// Observable API
+<script>
+/****************************************************************************
+Browser-baased tool to analyze SVG icon similarity.
+Copyright (C) 2024
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*****************************************************************************/
+
+// Observable DOM helper API
 let DOM = {
   context2d: function(width, height) {
     let c = document.createElement("canvas");
     c.width = width;
     c.height = height;
-    return c.getContext("2d");
+    let ctx = c.getContext("2d", {
+      willReadFrequently: true
+    });
+    return ctx;
   }
 }
 
@@ -59,7 +80,7 @@ let DOM = {
 let dropZone = document.getElementById("dropArea");
 
 dropZone.addEventListener("drop", async event => {
-  console.log('File(s) dropped');
+  printStatus('File(s) dropped');
 
   // Prevent default behavior (Prevent file from being opened)
   event.preventDefault();
@@ -112,15 +133,26 @@ async function readEntriesPromise(directoryReader) {
       directoryReader.readEntries(resolve, reject);
     });
   } catch (err) {
-    console.log(err);
+    printStatus(err);
   }
+}
+
+let statusEl = document.getElementById("status");
+let outputEl = document.getElementById("output");
+let statusToConsole = true;
+
+function printOutput(str) {
+  outputEl.textContent += (str + "\n");
+}
+
+function printStatus(str) {
+  statusEl.textContent += (str + "\n");
+  if (statusToConsole) console.log(str);
 }
 
 function processFiles(fileEntries) {
 
   fileEntries = fileEntries.filter(e => e.name.toLowerCase().endsWith(".svg"));
-  
-  //console.log(fileEntries);
   
   Promise.all(fileEntries.map(entry => new Promise((resolve, reject) => {
     entry.file(f => {
@@ -133,22 +165,25 @@ function processFiles(fileEntries) {
       });
       reader.readAsDataURL(f);
     });
-  }))).then(results => processImages(results));
+  })))
+  .then(results => processImages(results));
+  
+  printStatus("Loaded " + fileEntries.length + " SVG files.");
 }
 
 function processImages(images) {
 
-  //let canvas = new Image(200, 200);
   let maxDim = images.reduce((acc, img) => (console.log(img.filename + " " + img.height),{w: Math.max(acc.w||0, img.width), h: Math.max(acc.h||0, img.height)}), {});
-  console.log("Max width: " + maxDim.w);
-  console.log("Max height: " + maxDim.h);
+  printStatus("Max width: " + maxDim.w);
+  printStatus("Max height: " + maxDim.h);
   
   let algoResolution = +document.getElementById("algorithmResolution").value;
   let algoScale = algoResolution/Math.max(maxDim.w, maxDim.h);
   
-  console.log("Algorithm working at scale: " + algoScale);
+  printStatus("Algorithm working at scale: " + algoScale);
 
-  document.getElementById("output").innerHTML = algoResolution + "\n";
+  printOutput(algoResolution);
+  printOutput("#name,exclusivePixelCount,commonPixelCount,pixelRatio,maxDiffPixelCount,maxErodedDiffPixelCount");
   
   let bitmapThreshold = +document.getElementById("bitmapThresholdInput").value;
   
@@ -232,7 +267,7 @@ function computeDifference(entries, options, index1=0, index2=0) {
                 e.maxErodedDiffPixelCount               // maximum eroded difference pixel count
               ).join(",");
     
-    document.getElementById("output").innerHTML += str + "\n";
+    printOutput(str);
     index1++;
     index2 = 0;
     diffs = [];
@@ -246,15 +281,20 @@ function computeDifference(entries, options, index1=0, index2=0) {
     if (index2 > index1) {
       let done = index1 * entries.length - (index1 * (index1 + 1) / 2) + countCurrent;  
       let elapsed = (Date.now() - startTime) / 1000;
-      let secondsRem = Math.floor(elapsed / done * (total-done)) % 60;
-      let minutesRem = Math.floor(elapsed / done * (total-done) / 60) % 60;
-      let hoursRem = Math.floor(elapsed / done * (total-done) / 3600)
-      document.getElementById("status").innerHTML = "Processing image " + (index1+1) + " of " + entries.length + " - computing difference " + ("00"+countCurrent).slice(-3) + "... " + (done / total * 100).toFixed(1) + "%, " + hoursRem + ":" + ("0" + minutesRem).slice(-2) + ":" + ("0" + secondsRem).slice(-2) + " remaining.";
+      let remaining = elapsed / done * (total-done) * 2;
+      let secondsRem = Math.floor(remaining) % 60;
+      let minutesRem = Math.floor(remaining / 60) % 60;
+      let hoursRem = Math.floor(remaining / 3600);
+      printStatus("Processing image " + (index1+1) + " of " + (entries.length-1) + " - computing difference " + ("00"+countCurrent).slice(-3) + "... " + (done / total * 100).toFixed(1) + "%, " + hoursRem + ":" + ("0" + minutesRem).slice(-2) + ":" + ("0" + secondsRem).slice(-2) + " remaining.");
     }
     setTimeout(() => computeDifference(entries, options, index1, index2), 0);
   }
   else {
-    document.getElementById("status").innerHTML = "Finished.";
+    printStatus("Finished.");
+    
+    let elapsed = (Date.now() - startTime) / 1000;
+    printStatus("Total time: " + Math.floor(elapsed / 3600) + ":" + ("0" + Math.floor(elapsed / 60) % 60).slice(-2) + ":" + ("0" + Math.floor(elapsed % 60)).slice(-2) + ".");
+
     //reportResults(entries);
   }
 }
@@ -271,7 +311,7 @@ function reportResults(entries) {
         console.log(diff);
       }
       */
-      console.log(entry.name + "," + sorted.map(e => e.img2.name + "," + (e.exclusivePixelCount / e.xorImg.width / e.xorImg.height).toFixed(2) + "," + e.ratio.toFixed(2)).join(","));
+      printStatus(entry.name + "," + sorted.map(e => e.img2.name + "," + (e.exclusivePixelCount / e.xorImg.width / e.xorImg.height).toFixed(2) + "," + e.ratio.toFixed(2)).join(","));
     }
   }
 }
@@ -286,7 +326,10 @@ function sampleSVG(image, scale=1) {
 }
 
 function thresh(img, threshold=120) {
-  let ctx = img.getContext("2d");
+  let ctx = img.getContext("2d", {
+    willReadFrequently: true
+  });
+  
   let pixels = ctx.getImageData(0, 0, img.width, img.height); 
 
   let thresholdRGB = threshold * 3;
@@ -324,13 +367,16 @@ function xorBitmap(image1, image2, options) {
 }
 
 function compare(img1, img2) {
-  let hAligns = (img1.width == img2.width) ? ["left"] : ["left","middle","right"];
-  let vAligns = (img1.height == img2.height) ? ["top"] : ["top","middle","bottom"];
+  let hAligns = (img1.width == img2.width) ? ["left"] : ["left","center","right"];
+  let vAligns = (img1.height == img2.height) ? ["top"] : ["top","center","bottom"];
 }
 
 function countPixels(img) {
   
-  let ctx = img.getContext("2d");
+  let ctx = img.getContext("2d", {
+    willReadFrequently: true
+  });
+
   let pixels = ctx.getImageData(0, 0, img.width, img.height); 
 
   let d = pixels.data;
@@ -546,7 +592,7 @@ function combine(img1, img2, options = {}) {
     case "right":   x1=Math.max(img2.width-img1.width, 0);
                     x2=Math.max(img1.width-img2.width, 0);
                     break;
-    case "middle":  x1=Math.max(Math.trunc((img2.width-img1.width)/2), 0);
+    case "center":  x1=Math.max(Math.trunc((img2.width-img1.width)/2), 0);
                     x2=Math.max(Math.trunc((img1.width-img2.width)/2), 0);
                     break;
     case "left":    // default;
@@ -556,7 +602,7 @@ function combine(img1, img2, options = {}) {
     case "bottom":  y1=Math.max(img2.height-img1.height, 0);
                     y2=Math.max(img1.height-img2.height, 0);
                     break;
-    case "middle":  y1=Math.max(Math.trunc((img2.height-img1.height)/2), 0);
+    case "center":  y1=Math.max(Math.trunc((img2.height-img1.height)/2), 0);
                     y2=Math.max(Math.trunc((img1.height-img2.height)/2), 0);
                     break;
     case "top":    // default;
@@ -584,7 +630,9 @@ function growWithCircle(img, options={}) {
     ...options
   };
   
-  let ctx = img.getContext("2d");
+  let ctx = img.getContext("2d", {
+    willReadFrequently: true
+  });
 
   let ctx2 = DOM.context2d(img.width, img.height);
   //ctx2.drawImage(img, 0, 0);
@@ -619,8 +667,10 @@ function grow(img, options) {
     opacity: 96
   }, options);
   
-  let ctx = img.getContext("2d");
-
+  let ctx = img.getContext("2d", {
+    willReadFrequently: true
+  });
+  
   let ctx2 = DOM.context2d(img.width, img.height);
   ctx2.drawImage(img, 0, 0);
   
@@ -666,8 +716,10 @@ function erode(img, options={}) {
     iterations: 1
   }, options);
   
-  let ctx = img.getContext("2d");
-
+  let ctx = img.getContext("2d", {
+    willReadFrequently: true
+  });
+  
   let ctx2 = DOM.context2d(img.width, img.height);
   
   let pixels1 = ctx.getImageData(0, 0, img.width, img.height); 
@@ -728,8 +780,10 @@ function centerOfMass(img, options={}) {
     fillThreshold: 127
   }, options);
 
-  let ctx = img.getContext("2d");
-
+  let ctx = img.getContext("2d", {
+    willReadFrequently: true
+  });
+  
   let pixels = ctx.getImageData(0, 0, img.width, img.height); 
 
   let d = pixels.data;  
