@@ -2,7 +2,7 @@
 
 ## Usage
 
-To use the tool, access index.html through a web server. You can run a web server in the project directory as follows:
+To use the tool, access **index.html** through a web server. You can run a web server in the project directory as follows:
 
 Python
 ```
@@ -18,7 +18,7 @@ and then visit http://localhost:8089 in your browser.
 
 For Windows users, the enclosed `serve.bat` launches a Node.js web server. 
 
-After launching the tool, drop a set of svg files onto the provided area. The results of the analysis are output in the browser window and can be copied to a file for subsequent analysis.
+After launching the tool in your browser, drop a set of svg files onto the provided area. The results of the analysis are output in the browser window and can be copied to a file for subsequent analysis.
 
 ## License
 
